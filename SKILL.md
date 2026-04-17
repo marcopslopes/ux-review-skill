@@ -109,15 +109,24 @@ No preparation needed. URL is used directly in Step 4.
 
 ---
 
-## Step 3 — Ask Persona A Configuration (2 questions max)
+## Step 3 — Configuration Questions (3 questions max)
 
-Ask the user exactly two questions using AskUserQuestion, one at a time:
+Ask the user exactly three questions using AskUserQuestion, one at a time:
 
 **Question 1:**
 > Who is Persona A for this review? (e.g. "senior developer", "first-time shopper", "enterprise IT admin")
 
 **Question 2:**
 > What device are they on? (e.g. "desktop", "iPad", "iPhone 14")
+
+**Question 3:**
+> What type of business is this?
+> a) Marketplace / Booking platform
+> b) SaaS / Dashboard
+> c) E-commerce / Retail
+> d) Content / Media / Blog
+> e) Landing page / Marketing site
+> f) Other
 
 Map the device answer to a Playwright device descriptor (used in Mode 1 and 2 only):
 - "desktop" → `"Desktop Chrome"`
@@ -126,6 +135,16 @@ Map the device answer to a Playwright device descriptor (used in Mode 1 and 2 on
 - "ipad" → `"iPad Pro 11"`
 - "android" / "pixel" → `"Pixel 7"`
 - Other → `"Desktop Chrome"` (default, note in report)
+
+Map the business type answer to a reference file. If the file exists in `~/.claude/skills/ux-review/references/`, read it and include its content in all agent prompts as `BUSINESS TYPE CONTEXT:`:
+- a) → `marketplace.md`
+- b) → `saas.md`
+- c) → `ecommerce.md`
+- d) → `content.md`
+- e) → `landing.md`
+- f) → no reference file
+
+If the reference file does not exist, skip it — no error. Note the business type in the report header.
 
 ---
 
@@ -190,6 +209,68 @@ This produces:
 
 ---
 
+## Step 4c — DOM Pre-Audit (Mode 1 and 2 only)
+
+**Skip this step for Mode 3 and Mode 4** — no DOM available.
+
+Before dispatching agents, scan the `dom_summary` and `a11y_tree_content` from Step 4b to run 13 binary pass/fail checks. These produce ground-truth facts that agents can reference without guessing.
+
+### Checks
+
+| # | Check | Rule | Notes |
+|---|---|---|---|
+| 1 | Images without dimensions | `<img>` missing `width` or `height` — causes layout shift | Only functional/informational images. Skip decorative images (`alt=""`, `aria-hidden="true"`, or clearly presentational). |
+| 2 | Images without alt text | `<img>` with no `alt` attribute at all | Only functional/informational images. `alt=""` on decorative images is correct — do not flag. |
+| 3 | Inputs without labels | `<input>`, `<select>`, `<textarea>` with no `<label>`, `aria-label`, or `aria-labelledby` | Check both DOM and a11y tree. |
+| 4 | Icon buttons without accessible name | `<button>` containing only `<img>` or `<svg>` with no `aria-label`, no visible text | Check a11y tree for buttons with empty names. |
+| 5 | Div/span click handlers | `<div>` or `<span>` using `onclick`, `role="button"`, or `role="link"` instead of `<button>` or `<a>` | Semantic HTML required. |
+| 6 | Missing input types | `<input>` for email/phone/URL using `type="text"` instead of `type="email"`, `type="tel"`, `type="url"` | Infer from field name, placeholder, or label context. |
+| 7 | Missing autocomplete | Form inputs for name, email, phone, address without `autocomplete` attribute | Only flag on fields where autocomplete adds clear value. |
+| 8 | Zoom disabled | `<meta name="viewport">` containing `user-scalable=no` or `maximum-scale=1` | Direct accessibility violation. |
+| 9 | Missing lang attribute | `<html>` without `lang` attribute | Check DOM. |
+| 10 | Outline removed without replacement | CSS contains `outline: none` or `outline: 0` without a corresponding `:focus-visible` or `:focus` style | Check stylesheets in DOM if visible. If CSS is external and not in DOM, mark N/A. |
+| 11 | Empty links | `<a>` with `href=""` or `href="#"` and no meaningful content or `aria-label` | Check a11y tree for links with empty names or empty URLs. |
+| 12 | Missing touch-action | No `touch-action: manipulation` found in CSS on interactive elements | Flags absence at page level, not per-element. Mark N/A if not detectable. |
+| 13 | Visual affordance without interaction | Elements styled with `cursor: pointer`, underline, or button-like appearance (pill shape, background colour, border) but with no `href`, `onclick`, `role="button"`, or event handler | Catches "looks clickable but does nothing." Cross-reference a11y tree — if the element has no interactive role, it fails. |
+
+### Output Format
+
+Produce a `verified_violations` block formatted as:
+
+```
+VERIFIED_VIOLATIONS (confirmed facts from DOM inspection — not opinions):
+  FAIL [3]: Images without alt text — header search icon, location icon, Google Play badge ("Combined Shape")
+  FAIL [4]: Icon buttons without accessible name — 2 header buttons (search, location) have no aria-label
+  FAIL [13]: Visual affordance without interaction — "Iniciar sesión/Registrarse" styled as nav item but is plain <span> with no href/onclick
+  PASS [8]: Viewport does not disable zoom
+  PASS [9]: html lang="es" present
+  N/A [10]: External CSS not available for outline inspection
+  N/A [12]: CSS not available for touch-action inspection
+```
+
+Rules:
+- Each line starts with FAIL, PASS, or N/A
+- FAIL lines include the specific elements that failed (by name or description)
+- PASS lines are brief — just confirm what passed
+- N/A when the check cannot be performed (external CSS, no forms on page, etc.)
+- Order: all FAILs first, then PASSes, then N/As
+
+### Embedding in Agent Prompts
+
+Include the `verified_violations` block in **every** agent prompt in Step 5, after the artifact content and before the trends content:
+
+```
+VERIFIED_VIOLATIONS (confirmed facts from DOM inspection — not opinions):
+{verified_violations content}
+
+IMPORTANT: These are confirmed facts. Do not re-evaluate items marked PASS.
+Do not flag items already listed as FAIL — reference them if relevant to your
+analysis but do not duplicate them as new findings. Focus your analysis on
+issues NOT covered by these checks.
+```
+
+---
+
 ## Step 5 — Dispatch 5 Sub-Agents in Parallel
 
 Read the reference files to construct agent prompts:
@@ -232,14 +313,16 @@ Each agent receives:
 4. Agent C also receives the full heuristics.md content
 5. Explicit instruction to return **valid JSON only** in the format specified in its prompt template
 
-### Agent A — Configurable Persona
+### Agent A — Sarah Chen, Principal Product Designer
 
 ```
 prompt: |
-  You are conducting a UX review as a specific user persona.
+  {Insert Global Guardrails block from persona-generic.md}
 
-  YOUR PERSONA:
-  - Tech level: {user's answer to Q1}
+  You are conducting a UX review as Sarah Chen.
+
+  YOUR PERSONA CONTEXT:
+  - User type: {user's answer to Q1}
   - Device: {user's answer to Q2}
 
   {Insert Agent A prompt template from persona-generic.md}
@@ -261,11 +344,13 @@ prompt: |
   IMPORTANT: Return ONLY valid JSON in the format specified above. No markdown, no explanation outside the JSON.
 ```
 
-### Agent B — Mobile Low-Tech Persona
+### Agent B — Carlos Mendez, Senior UX Researcher
 
 ```
 prompt: |
-  You are conducting a UX review as a low-tech mobile user.
+  {Insert Global Guardrails block from persona-generic.md}
+
+  You are conducting a UX review as Carlos Mendez.
 
   {Insert Agent B prompt template from persona-generic.md}
 
@@ -286,11 +371,13 @@ prompt: |
   IMPORTANT: Return ONLY valid JSON in the format specified above. No markdown, no explanation outside the JSON.
 ```
 
-### Agent C — NNG Heuristic Expert
+### Agent C — Priya Sharma, Principal CRO Specialist
 
 ```
 prompt: |
-  You are a senior UX researcher conducting a formal heuristic evaluation.
+  {Insert Global Guardrails block from persona-generic.md}
+
+  You are conducting a UX review as Priya Sharma.
 
   {Insert Agent C prompt template from persona-generic.md}
 
@@ -314,11 +401,13 @@ prompt: |
   IMPORTANT: Return ONLY valid JSON in the format specified above. No markdown, no explanation outside the JSON.
 ```
 
-### Agent D — UI Quality & Brand Reviewer
+### Agent D — Marcus Weber, Creative Director
 
 ```
 prompt: |
-  You are a senior visual designer evaluating UI quality and brand coherence.
+  {Insert Global Guardrails block from persona-generic.md}
+
+  You are conducting a UX review as Marcus Weber.
 
   {Insert Agent D prompt template from persona-generic.md}
 
@@ -335,11 +424,13 @@ prompt: |
 
 Note: Agent D receives only the screenshot description — DOM/a11y details are not relevant for visual design evaluation.
 
-### Agent E — Jobs To Be Done Reviewer
+### Agent E — Yuki Tanaka, Head of Product Strategy
 
 ```
 prompt: |
-  You are a product strategist applying the JTBD framework to evaluate this page.
+  {Insert Global Guardrails block from persona-generic.md}
+
+  You are conducting a UX review as Yuki Tanaka.
 
   {Insert Agent E prompt template from persona-generic.md}
 
@@ -482,7 +573,8 @@ Use this structure:
 **Date:** {YYYY-MM-DD}
 **URL:** {target URL or file path}
 **Mode:** {Live URL | Local HTML | Screenshot | Figma}
-**Personas:** A: {tech level} on {device} · B: Mobile low-tech · C: NNG heuristics · D: UI quality · E: JTBD
+**Business Type:** {business type}
+**Personas:** A: Sarah Chen ({tech level} on {device}) · B: Carlos Mendez · C: Priya Sharma · D: Marcus Weber · E: Yuki Tanaka
 
 {If Mode 3 or 4, add this notice:}
 > Visual-only review — no DOM or accessibility data available. Export to HTML and rerun for full WCAG audit.
@@ -563,7 +655,7 @@ Use this structure:
 
 ## Detailed Findings
 
-### Agent A — {tech level} on {device}
+### Agent A — Sarah Chen ({tech level} on {device})
 
 {Agent A's narrative — max 150 words, plain paragraph, no sub-headers}
 
@@ -572,7 +664,7 @@ Use this structure:
 | 1 | {finding} | {location} | {Low/Med/High} | {A, B, ...} |
 | 2 | ... | ... | ... | ... |
 
-### Agent B — Mobile Low-Tech User
+### Agent B — Carlos Mendez
 
 {narrative — max 150 words}
 
@@ -580,7 +672,7 @@ Use this structure:
 |---|---|---|---|---|
 | 1 | ... | ... | ... | ... |
 
-### Agent C — NNG Heuristic Expert
+### Agent C — Priya Sharma
 
 {narrative — max 150 words}
 
@@ -588,7 +680,7 @@ Use this structure:
 |---|---|---|---|---|
 | 1 | ... | ... | ... | ... |
 
-### Agent D — UI Quality & Brand
+### Agent D — Marcus Weber
 
 {narrative — max 150 words}
 
@@ -596,7 +688,7 @@ Use this structure:
 |---|---|---|---|---|
 | 1 | ... | ... | ... | ... |
 
-### Agent E — Jobs To Be Done
+### Agent E — Yuki Tanaka
 
 {narrative — max 150 words}
 
