@@ -120,13 +120,13 @@ Ask the user exactly three questions using AskUserQuestion, one at a time:
 > What device are they on? (e.g. "desktop", "iPad", "iPhone 14")
 
 **Question 3:**
-> What type of business is this?
-> a) Marketplace / Booking platform
-> b) SaaS / Dashboard
-> c) E-commerce / Retail
-> d) Content / Media / Blog
-> e) Landing page / Marketing site
-> f) Other
+> What type of product is this?
+> a) Marketplace or booking platform
+> b) SaaS or dashboard
+> c) E-commerce or retail
+> d) Content, media or blog
+> e) Marketing or landing page
+> f) Other — describe briefly
 
 Map the device answer to a Playwright device descriptor (used in Mode 1 and 2 only):
 - "desktop" → `"Desktop Chrome"`
@@ -136,15 +136,16 @@ Map the device answer to a Playwright device descriptor (used in Mode 1 and 2 on
 - "android" / "pixel" → `"Pixel 7"`
 - Other → `"Desktop Chrome"` (default, note in report)
 
-Map the business type answer to a reference file. If the file exists in `~/.claude/skills/ux-review/references/`, read it and include its content in all agent prompts as `BUSINESS TYPE CONTEXT:`:
-- a) → `marketplace.md`
-- b) → `saas.md`
-- c) → `ecommerce.md`
-- d) → `content.md`
-- e) → `landing.md`
-- f) → no reference file
+Note the business type in the report header (e.g. `**Product Type:** Marketplace`).
 
-If the reference file does not exist, skip it — no error. Note the business type in the report header.
+Embed the following product type context in ALL agent prompts as `PRODUCT TYPE CONTEXT:`:
+
+- **Marketplace or booking platform:** Judge primarily on trust signals (reviews, ratings, verified badges), result quality and relevance, search-to-booking friction, and provider credibility. The core question: does this page help someone find and commit to a provider?
+- **SaaS or dashboard:** Judge primarily on onboarding clarity, time-to-value, feature discoverability, and whether the interface teaches itself. The core question: can a new user accomplish something meaningful in their first session?
+- **E-commerce or retail:** Judge primarily on product discovery, checkout flow friction, shipping/return transparency, and purchase confidence. The core question: does this page remove every reason not to buy?
+- **Content, media or blog:** Judge primarily on readability, content hierarchy, ad/content ratio, and whether the user can find and consume what they came for. The core question: does the content respect the reader's attention?
+- **Marketing or landing page:** Judge primarily on single-CTA clarity, value proposition speed, social proof placement, and scroll-to-conversion path. The core question: does every element on this page serve the one action it wants the user to take?
+- **Other:** Use the user's description to calibrate what "success" looks like for this product, then evaluate accordingly.
 
 ---
 
@@ -304,14 +305,45 @@ NOTE: This is a visual-only review ({source}). No DOM or accessibility tree is a
 
 Where `{source}` is "screenshot image" for Mode 3 or "Figma design export" for Mode 4.
 
+### Agent Guardrails (embedded in ALL agent prompts)
+
+Every agent prompt MUST include these guardrails at the top, before the persona instructions:
+
+```
+GUARDRAILS — READ BEFORE EVALUATING:
+
+1. COOKIE BANNERS: Cookie consent banners are a legal requirement in EU/UK
+   under GDPR and ePrivacy. Never assign Critical or P1 severity to a cookie
+   banner's existence. Only flag if:
+   - Banner is in wrong language for the page locale
+   - Banner physically blocks 100% of content with no way to dismiss
+   Maximum severity for cookie issues: Minor. Note it briefly and move on.
+
+2. CONFIDENCE THRESHOLD: The VERIFIED_VIOLATIONS section contains confirmed
+   facts from DOM inspection — trust those. For everything else, do not state
+   something is broken without evidence. If an element appears non-interactive
+   but the DOM shows it has valid href, onclick, or event handlers — it is NOT
+   broken. When uncertain, write "appears to" or "may be" rather than stating
+   as fact.
+
+3. SCORE CALIBRATION: Scores must reflect real user impact, not issue count.
+   - 7-10: Production ready, minor polish needed
+   - 5-7: Functional product with meaningful issues affecting some users
+   - 3-5: Significant problems affecting conversion and trust for many users
+   - 1-3: Core flows fundamentally broken, product unusable for primary use case
+   A widely-used commercial product with millions of active users should rarely
+   score below 4 in any category unless core flows are genuinely broken.
+```
+
 ### Agent Prompts
 
 Each agent receives:
-1. Its persona prompt (from persona-generic.md, with variables filled in)
-2. The artifact content embedded directly in the prompt (from Step 4b — NEVER file paths)
-3. The trends.md content as additional context
-4. Agent C also receives the full heuristics.md content
-5. Explicit instruction to return **valid JSON only** in the format specified in its prompt template
+1. The guardrails block above (at the top of the prompt)
+2. Its persona prompt (from persona-generic.md, with variables filled in)
+3. The artifact content embedded directly in the prompt (from Step 4b — NEVER file paths)
+4. The trends.md content as additional context
+5. Agent C also receives the full heuristics.md content
+6. Explicit instruction to return **valid JSON only** in the format specified in its prompt template
 
 ### Agent A — Sarah Chen, Principal Product Designer
 
@@ -460,30 +492,25 @@ Once all 5 agents return, parse their JSON responses and compile:
 
 For each category, average only the scores that were provided:
 
-**Mode 1 and 2 (full artifacts):**
+| Category | Scored by |
+|---|---|
+| First Impression & Trust | A only |
+| Emotional Experience | B only |
+| Conversion & Flow | C only |
+| UI Quality & Craft | D only |
+| Jobs To Be Done | E only |
 
-| Category | Scored by | Average across |
-|---|---|---|
-| Usability | A, B, C | 3 agents |
-| Accessibility (WCAG) | C only | 1 agent |
-| Visual Clarity | A, B, C | 3 agents |
-| Navigation & Flow | A, C | 2 agents |
-| Error Prevention | B, C | 2 agents |
-| UI Quality | D only | 1 agent |
-| Jobs To Be Done | E only | 1 agent |
+Each agent provides a single score (1-10) for their category.
 
-**Mode 3 and 4 (visual only — no Accessibility score):**
+**Overall Score** = (average of all 5 category scores) x 10, rounded to nearest integer. Out of 100. If an agent is unavailable, average across the agents that completed.
 
-| Category | Scored by | Average across |
-|---|---|---|
-| Usability | A, B, C | 3 agents |
-| Visual Clarity | A, B, C | 3 agents |
-| Navigation & Flow | A, C | 2 agents |
-| Error Prevention | B, C | 2 agents |
-| UI Quality | D only | 1 agent |
-| Jobs To Be Done | E only | 1 agent |
+**Score calibration check:** Before finalizing scores, verify they reflect real user impact:
+- 70-100: Production ready, minor polish needed
+- 50-70: Functional product with meaningful issues affecting some users
+- 30-50: Significant problems affecting conversion and trust for many users
+- Below 30: Core flows fundamentally broken, product unusable for primary use case
 
-**Overall Score** = (average of all scored category scores) x (100/10), rounded to nearest integer. Out of 100.
+A widely-used commercial product with millions of active users should rarely score below 40 unless core flows are genuinely broken. If the overall score is below 40, re-examine whether the category scores are calibrated against real user impact rather than issue count. WCAG details and cookie banners alone should not drag a functional product into the 30s.
 
 ### 6b. Deduplicate, Rank & Assign Effort
 
@@ -585,15 +612,11 @@ Use this structure:
 
 | Category | Score | |
 |---|---|---|
-| Usability | {score}/10 | {emoji} |
-| Accessibility (WCAG) | {score}/10 | {emoji} |
-| Visual Clarity | {score}/10 | {emoji} |
-| Navigation & Flow | {score}/10 | {emoji} |
-| Error Prevention | {score}/10 | {emoji} |
-| UI Quality | {score}/10 | {emoji} |
+| First Impression & Trust | {score}/10 | {emoji} |
+| Emotional Experience | {score}/10 | {emoji} |
+| Conversion & Flow | {score}/10 | {emoji} |
+| UI Quality & Craft | {score}/10 | {emoji} |
 | Jobs To Be Done | {score}/10 | {emoji} |
-
-{For Mode 3/4, omit the Accessibility row and add: *Accessibility score requires DOM — not available in visual-only mode.*}
 
 ---
 
@@ -721,11 +744,9 @@ After writing the file, print a concise summary to the terminal. **Max 15 lines.
 ```
 UX Review: {site-name} — {overall}/100
 
-  Usability          {score}/10  {emoji}
-  Accessibility      {score}/10  {emoji}
-  Visual Clarity     {score}/10  {emoji}
-  Navigation & Flow  {score}/10  {emoji}
-  Error Prevention   {score}/10  {emoji}
+  First Impression   {score}/10  {emoji}
+  Emotional UX       {score}/10  {emoji}
+  Conversion & Flow  {score}/10  {emoji}
   UI Quality         {score}/10  {emoji}
   Jobs To Be Done    {score}/10  {emoji}
 
